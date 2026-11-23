@@ -15,141 +15,387 @@ const PositionSizeTool = {
     },
 
     render({ anchors, props, state }) {
+
         const mode = 'none';
-        const { targetRiskRewardRatio, tickValue, riskAmount, labelsOnRight } = props;
 
-        const a01xdistance = anchors[1] ? anchors[1].x.value - anchors[0].x.value : 0;
-        const a02ydistance = anchors[1] ? anchors[1].y.value - anchors[0].y.value : 0;
-        const profitTarget = a02ydistance * targetRiskRewardRatio;
-        const tpDistance   = anchors[1] ? op(du(anchors[0].y.value), "+", du(profitTarget)) : 0;
-        const slDistance   = anchors[1] ? op(anchors[0].y, "-", du(a02ydistance)) : 0;
-        const buyTP        = anchors[1] && anchors[1].y.value < anchors[0].y.value;
+        const {
+            targetRiskRewardRatio,
+            tickValue,
+            tickSize,
+            riskAmount,
+            labelsOnRight
+        } = props;
 
-        const slPts           = Math.abs(a02ydistance);
-        const riskPerContract = slPts * tickValue;
-        const contracts       = riskPerContract > 0
-            ? Math.max(1, Math.floor(riskAmount / riskPerContract))
-            : 1;
-        const actualRisk  = contracts * riskPerContract;
-        const reward      = contracts * Math.abs(profitTarget) * tickValue;
-        const rrRatio     = slPts > 0
-            ? (Math.abs(profitTarget) / slPts).toFixed(2)
+        // ----------------------------------
+        // ANCHORS AND PRICE CALCULATIONS
+        // Anchor 1 = Entry
+        // Anchor 2 = Stop Loss
+        // ----------------------------------
+
+        const hasAnchors = !!anchors[1];
+
+        const entryPrice = anchors[0]
+            ? anchors[0].y.value
+            : 0;
+
+        const stopPrice = hasAnchors
+            ? anchors[1].y.value
+            : 0;
+
+        const a01xdistance = hasAnchors
+            ? anchors[1].x.value - anchors[0].x.value
+            : 0;
+
+        const stopDelta = hasAnchors
+            ? stopPrice - entryPrice
+            : 0;
+
+        const slPts = Math.abs(stopDelta);
+
+        // Stop below entry = BUY
+        // Stop above entry = SELL
+        const buyTP = hasAnchors && stopPrice < entryPrice;
+
+        // Ratio > 0: TP on the opposite side of the stop (normal)
+        // Ratio < 0: TP on the SAME side as the stop
+        const profitMove = -stopDelta * targetRiskRewardRatio;
+
+        const profitPts = Math.abs(profitMove);
+
+        // +1 = normal profit, -1 = TP placed on the loss side
+        const rrSign = targetRiskRewardRatio < 0 ? -1 : 1;
+
+        // true = TP line is above entry
+        const tpIsUp = profitMove !== 0
+            ? profitMove > 0
+            : buyTP;
+
+        const tpPrice = entryPrice + profitMove;
+
+        const tpDistance = du(tpPrice);
+        const slDistance = du(stopPrice);
+
+        // ----------------------------------
+        // POSITION SIZE CALCULATION
+        // MNQ DEFAULT:
+        // Tick size = 0.25 points
+        // Tick value = $0.50
+        // ----------------------------------
+
+        const safeTickSize = tickSize > 0
+            ? tickSize
+            : 0.25;
+
+        const safeTickValue = tickValue >= 0
+            ? tickValue
+            : 0.50;
+
+        // Round SL ticks UP to avoid understating risk
+        const slTicks = slPts > 0
+            ? Math.ceil(slPts / safeTickSize - 0.000000001)
+            : 0;
+
+        const riskPerContract = slTicks * safeTickValue;
+
+        // Always round contracts DOWN
+        // Never force a minimum of 1 contract
+        const contracts = riskPerContract > 0
+            ? Math.floor(riskAmount / riskPerContract)
+            : 0;
+
+        const actualRisk = contracts * riskPerContract;
+
+        // Round TP ticks DOWN
+        const tpTicks = profitPts > 0
+            ? Math.floor(profitPts / safeTickSize + 0.000000001)
+            : 0;
+
+        // Signed reward (negative when ratio is negative)
+        const reward = contracts * tpTicks * safeTickValue * rrSign;
+
+        const rrRatio = slPts > 0
+            ? ((rrSign * profitPts) / slPts).toFixed(2)
             : "—";
 
-        const labelX         = labelsOnRight ? anchors[1] && anchors[1].x : anchors[0] && anchors[0].x;
-        const alignBelow     = labelsOnRight ? 'rightBelow' : 'leftBelow';
-        const alignAbove     = labelsOnRight ? 'rightAbove' : 'leftAbove';
+        // Label: ratio >= 1 -> "1:2" (risk 1, reward 2)
+        //        ratio <  1 -> "10:1" (risk 10, reward 1), e.g. ratio 0.1
+        const rrValue = slPts > 0 ? profitPts / slPts : 0;
 
-        const baseLine = anchors[1] ? [{
+        const rrLabel = slPts > 0
+            ? (rrValue > 0 && rrValue < 1
+                ? `${(1 / rrValue).toFixed(2).replace(/\.?0+$/, '')}:1`
+                : `1:${rrValue.toFixed(2).replace(/\.?0+$/, '')}`)
+            : "—";
+
+        const rewardText = `${reward < 0 ? '-' : '+'}$${Math.abs(reward).toFixed(2)}`;
+
+        // ----------------------------------
+        // LABEL POSITIONS
+        // ----------------------------------
+
+        const labelX = labelsOnRight
+            ? anchors[1] && anchors[1].x
+            : anchors[0] && anchors[0].x;
+
+        const alignBelow = labelsOnRight
+            ? 'rightBelow'
+            : 'leftBelow';
+
+        const alignAbove = labelsOnRight
+            ? 'rightAbove'
+            : 'leftAbove';
+
+        // ----------------------------------
+        // ENTRY LINE
+        // ----------------------------------
+
+        const baseLine = hasAnchors ? [{
             tag: 'LineSegments',
             key: 'centreLine',
-            lines: [{ tag: 'Line', a: anchors[0], b: { x: anchors[1].x, y: anchors[0].y } }],
-            lineStyle: { lineWidth: 1, color: props.neutralColor }
+            lines: [{
+                tag: 'Line',
+                a: anchors[0],
+                b: {
+                    x: anchors[1].x,
+                    y: anchors[0].y
+                }
+            }],
+            lineStyle: {
+                lineWidth: 1,
+                color: props.neutralColor
+            }
         }] : [];
 
-        const plLine = anchors[1] ? [{
+        // ----------------------------------
+        // TP AND SL LINES
+        // ----------------------------------
+
+        const plLine = hasAnchors ? [{
             tag: 'LineSegments',
             key: 'lossLine',
-            lines: [{ tag: 'Line',
-                a: { x: anchors[0].x, y: anchors[1].y },
-                b: { x: anchors[1].x, y: anchors[1].y }
+            lines: [{
+                tag: 'Line',
+                a: {
+                    x: anchors[0].x,
+                    y: slDistance
+                },
+                b: {
+                    x: anchors[1].x,
+                    y: slDistance
+                }
             }],
-            lineStyle: { lineWidth: 1, color: props.lossColor }
+            lineStyle: {
+                lineWidth: 1,
+                color: props.lossColor
+            }
         }, {
             tag: 'LineSegments',
             key: 'profitLine',
-            lines: [{ tag: 'Line',
-                a: { x: anchors[0].x, y: tpDistance },
-                b: { x: anchors[1].x, y: tpDistance }
+            lines: [{
+                tag: 'Line',
+                a: {
+                    x: anchors[0].x,
+                    y: tpDistance
+                },
+                b: {
+                    x: anchors[1].x,
+                    y: tpDistance
+                }
             }],
-            lineStyle: { lineWidth: 1, color: props.profitColor }
+            lineStyle: {
+                lineWidth: 1,
+                color: props.profitColor
+            }
         }] : [];
 
-        const profitShade = anchors[1] && props.showShade ? [{
-            tag: 'Shapes', key: 'topshade',
-            primitives: [{ tag: 'Rectangle',
-                position: { x: anchors[0].x, y: anchors[0].y },
-                size: { height: du(-profitTarget), width: du(a01xdistance) }
+        // ----------------------------------
+        // PROFIT SHADE
+        // ----------------------------------
+
+        const profitShade = hasAnchors && props.showShade ? [{
+            tag: 'Shapes',
+            key: 'topshade',
+            primitives: [{
+                tag: 'Rectangle',
+                position: {
+                    x: anchors[0].x,
+                    y: anchors[0].y
+                },
+                size: {
+                    height: du(-profitMove),
+                    width: du(a01xdistance)
+                }
             }],
-            fillStyle: { opacity: props.opacity, color: props.profitColor }
+            fillStyle: {
+                opacity: props.opacity,
+                color: props.profitColor
+            }
         }] : [];
 
-        const lossShade = anchors[1] && props.showShade ? [{
-            tag: 'Shapes', key: 'bottomshade',
-            primitives: [{ tag: 'Rectangle',
-                position: { x: anchors[0].x, y: anchors[0].y },
-                size: { height: du(a02ydistance), width: du(a01xdistance) }
+        // ----------------------------------
+        // LOSS SHADE
+        // ----------------------------------
+
+        const lossShade = hasAnchors && props.showShade ? [{
+            tag: 'Shapes',
+            key: 'bottomshade',
+            primitives: [{
+                tag: 'Rectangle',
+                position: {
+                    x: anchors[0].x,
+                    y: anchors[0].y
+                },
+                size: {
+                    height: du(stopDelta),
+                    width: du(a01xdistance)
+                }
             }],
-            fillStyle: { opacity: props.opacity, color: props.lossColor }
+            fillStyle: {
+                opacity: props.opacity,
+                color: props.lossColor
+            }
         }] : [];
 
-        const riskSize = anchors[1] ? [{
-            tag: 'Text', key: 'riskLabel',
-            point: { x: labelX, y: buyTP ? op(slDistance, "+", px(3)) : op(slDistance, "-", px(3)) },
-            text: `SL: ${slPts.toFixed(1)} pts | -$${actualRisk.toFixed(2)}`,
-            style: { fontSize: 12, fill: props.lossColor },
-            textAlignment: buyTP ? alignBelow : alignAbove,
+        // ----------------------------------
+        // RISK AND PROFIT LABELS
+        // ----------------------------------
+
+        const riskSize = hasAnchors ? [{
+            tag: 'Text',
+            key: 'riskLabel',
+            point: {
+                x: labelX,
+                y: buyTP
+                    ? op(slDistance, "+", px(3))
+                    : op(slDistance, "-", px(3))
+            },
+            text: `SL: ${slPts.toFixed(2)} pts | -$${actualRisk.toFixed(2)}`,
+            style: {
+                fontSize: 12,
+                fill: props.lossColor
+            },
+            textAlignment: buyTP ? alignBelow : alignAbove
         }, {
-            tag: 'Text', key: 'profitLabel',
-            point: { x: labelX, y: buyTP ? op(tpDistance, "-", px(12)) : op(tpDistance, "+", px(12)) },
-            text: `TP: ${Math.abs(profitTarget).toFixed(1)} pts | +$${reward.toFixed(2)}`,
-            style: { fontSize: 12, fill: props.profitColor },
-            textAlignment: buyTP ? alignAbove : alignBelow,
+            tag: 'Text',
+            key: 'profitLabel',
+            point: {
+                x: labelX,
+                y: tpIsUp
+                    ? op(tpDistance, "-", px(12))
+                    : op(tpDistance, "+", px(12))
+            },
+            text: `TP: ${profitPts.toFixed(2)} pts | ${rewardText}`,
+            style: {
+                fontSize: 12,
+                fill: props.profitColor
+            },
+            textAlignment: tpIsUp ? alignAbove : alignBelow
         }] : [];
+
+        // ----------------------------------
+        // CONTRACTS AND R:R LABEL
+        // ----------------------------------
 
         const valueSize = anchors[0] ? [{
-            tag: 'Text', key: 'EntryLabel',
-            point: { x: anchors[0].x, y: op(du(anchors[0].y.value), '+', px(3)) },
-            text: `${contracts} ${contracts === 1 ? 'contract' : 'contracts'} | R:R 1:${rrRatio}`,
-            style: { fontSize: 12, fill: props.neutralColor },
-            textAlignment: 'rightBelow',
+            tag: 'Text',
+            key: 'EntryLabel',
+            point: {
+                x: anchors[0].x,
+                y: op(du(entryPrice), '+', px(3))
+            },
+            text: `${contracts} ${contracts === 1 ? 'contract' : 'contracts'} | R:R ${rrLabel}`,
+            style: {
+                fontSize: 12,
+                fill: props.neutralColor
+            },
+            textAlignment: 'rightBelow'
         }] : [];
 
-        // --- 50% TP line (lime green) ---
-        const halfTP = anchors[0].y.value - (profitTarget * 0.5);
+        // ----------------------------------
+        // 50% TP LINE
+        // ----------------------------------
 
-        const fiftyTPLine = anchors[1] && props.showTP50 ? [{
+        const halfTP = entryPrice + (profitMove * 0.5);
+
+        const fiftyTPLine = hasAnchors && props.showTP50 ? [{
             tag: 'LineSegments',
             key: 'halfTPLineSolid',
             lines: [{
                 tag: 'Line',
-                a: { x: anchors[0].x, y: du(halfTP) },
-                b: { x: anchors[1].x, y: du(halfTP) }
+                a: {
+                    x: anchors[0].x,
+                    y: du(halfTP)
+                },
+                b: {
+                    x: anchors[1].x,
+                    y: du(halfTP)
+                }
             }],
-            lineStyle: { lineWidth: 3, color: '#32CD32' } // LimeGreen
+            lineStyle: {
+                lineWidth: 3,
+                color: '#32CD32'
+            }
         }, {
-            tag: 'Text', key: 'fiftyTPLabel',
+            tag: 'Text',
+            key: 'fiftyTPLabel',
             point: {
                 x: labelX,
-                y: buyTP ? op(du(halfTP), '-', px(3)) : op(du(halfTP), '+', px(3))
+                y: tpIsUp
+                    ? op(du(halfTP), "-", px(3))
+                    : op(du(halfTP), "+", px(3))
             },
             text: FIFTY_TP_LABEL,
-            style: { fontSize: 12, fill: '#00DD00' },
-            textAlignment: buyTP ? alignAbove : alignBelow,
+            style: {
+                fontSize: 12,
+                fill: '#00DD00'
+            },
+            textAlignment: tpIsUp ? alignAbove : alignBelow
         }] : [];
+
+        // ----------------------------------
+        // 50% SL LINE
         // ----------------------------------
 
-        const halfSL = anchors[0].y.value + (a02ydistance * 0.5);
+        const halfSL = entryPrice + (stopDelta * 0.5);
 
-        const fiftySLLine = anchors[1] && props.showSL50 ? [{
+        const fiftySLLine = hasAnchors && props.showSL50 ? [{
             tag: 'LineSegments',
             key: 'halfSLLine',
             lines: [{
                 tag: 'Line',
-                a: { x: anchors[0].x, y: du(halfSL) },
-                b: { x: anchors[1].x, y: du(halfSL) }
+                a: {
+                    x: anchors[0].x,
+                    y: du(halfSL)
+                },
+                b: {
+                    x: anchors[1].x,
+                    y: du(halfSL)
+                }
             }],
-            lineStyle: { lineWidth: 3, color: '#ff0000' }
+            lineStyle: {
+                lineWidth: 3,
+                color: '#ff0000'
+            }
         }, {
-            tag: 'Text', key: 'fiftySLLabel',
+            tag: 'Text',
+            key: 'fiftySLLabel',
             point: {
                 x: labelX,
-                y: buyTP ? op(du(halfSL), '+', px(3)) : op(du(halfSL), '-', px(3))
+                y: buyTP
+                    ? op(du(halfSL), "+", px(3))
+                    : op(du(halfSL), "-", px(3))
             },
             text: FIFTY_SL_LABEL,
-            style: { fontSize: 12, fill: '#ff0000' },
-            textAlignment: buyTP ? alignBelow : alignAbove,
+            style: {
+                fontSize: 12,
+                fill: '#ff0000'
+            },
+            textAlignment: buyTP ? alignBelow : alignAbove
         }] : [];
+
+        // ----------------------------------
+        // RETURN DRAWING
+        // ----------------------------------
 
         return {
             items: [
@@ -160,7 +406,7 @@ const PositionSizeTool = {
                 ...riskSize,
                 ...valueSize,
                 ...fiftyTPLine,
-                ...fiftySLLine,
+                ...fiftySLLine
             ],
             state: mode === state.mode
                 ? state
@@ -169,12 +415,23 @@ const PositionSizeTool = {
     },
 
     anchorRestraints({ anchors }) {
-        const r = anchors[1] ? { x: [anchors[0].x.value, anchors[0].x.value + 10000] } : {};
+        const r = anchors[1]
+            ? {
+                x: [
+                    anchors[0].x.value,
+                    anchors[0].x.value + 10000
+                ]
+            }
+            : {};
+
         return [{}, r];
     },
 
     anchorStyles({ props }) {
-        return [{ color: props.neutralColor }, { color: props.lossColor }];
+        return [
+            { color: props.neutralColor },
+            { color: props.lossColor }
+        ];
     }
 };
 
@@ -182,18 +439,28 @@ module.exports = {
     name: "PositionSizeTool",
     drawing: PositionSizeTool,
     description: "Risk Reward",
+
     params: {
-        profitColor:           predef.paramSpecs.color('#0d0'),
-        lossColor:             predef.paramSpecs.color('#d00'),
-        neutralColor:          predef.paramSpecs.color('#999'),
-        opacity:               predef.paramSpecs.percent(7, 1, 0, 100),
-        showShade:             predef.paramSpecs.bool(true),
-        labelsOnRight:         predef.paramSpecs.bool(false),
-        showTP50:              predef.paramSpecs.bool(false),
-        showSL50:              predef.paramSpecs.bool(false),
-        tickValue:             predef.paramSpecs.number(2, 0.01, 0), // Default = MNQ (Micro Nasdaq): $2.00 per point
-        riskAmount:            predef.paramSpecs.number(200, 1, 0),
-        targetRiskRewardRatio: predef.paramSpecs.number(1, 0.25, 0),
+        profitColor: predef.paramSpecs.color('#0d0'),
+        lossColor: predef.paramSpecs.color('#d00'),
+        neutralColor: predef.paramSpecs.color('#999'),
+
+        opacity: predef.paramSpecs.percent(7, 1, 0, 100),
+
+        showShade: predef.paramSpecs.bool(true),
+        labelsOnRight: predef.paramSpecs.bool(false),
+        showTP50: predef.paramSpecs.bool(false),
+        showSL50: predef.paramSpecs.bool(false),
+
+        // MNQ DEFAULT SETTINGS
+        tickSize: predef.paramSpecs.number(0.25, 0.01, 0),
+        tickValue: predef.paramSpecs.number(0.50, 0.01, 0),
+
+        riskAmount: predef.paramSpecs.number(200, 1, 0),
+
+        // Step 0.01 so you can type values like 0.1 (TP = 1/10 of the SL)
+        targetRiskRewardRatio: predef.paramSpecs.number(1, 0.01, 0)
     },
+
     maxN: 2
 };
